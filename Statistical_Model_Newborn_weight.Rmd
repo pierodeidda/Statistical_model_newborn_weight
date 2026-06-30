@@ -1,0 +1,1560 @@
+---
+title: "Statistical_Model_Newborn_weight"
+output: html_notebook
+---
+
+Statistical Model for Predicting Newborn Weight
+
+Company Context Company: Neonatal Health Solutions 
+
+Objective: Create a statistical model capable of accurately predicting newborn
+birth weight, based on clinical variables collected from three
+hospitals.   
+
+The project aims to improve the management of high-risk pregnancies, optimizing hospital resources and ensuring better outcomes for neonatal health.   
+
+The variables collected include:   
+
+Maternal Age: Measure of age in years.   
+
+- Number of Pregnancies: How many pregnancies the mother has previously had.   
+
+- Maternal smoking: A binary indicator (0 = non-smoker, 1 = smoker).   
+
+- Pregnancy duration: Number of weeks of gestation.   
+
+- Infant weight: Birth weight in grams.   
+
+- Length and Head circumference: Infant length and
+head diameter, which can also be measured during pregnancy via
+ultrasound.   
+
+- Type of delivery: Natural or cesarean.   
+
+- Hospital of birth: Hospital 1, 2, or 3.   
+
+- Infant sex: Male (M) or female (F).   
+
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+library(dplyr)
+library(moments)
+library(ggplot2)
+library(patchwork)
+library(scales)
+library(ggpubr)
+options(width = 100)
+library(knitr)
+library(kableExtra)
+library(car)
+library(ggpubr)
+```
+
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+# IMPORT THE DATASET
+dataset <- read.csv("neonati.csv")
+
+N_observations = dim(dataset)[1]
+N_variables = dim(dataset)[2]
+dataset$Fumatrici <- factor(dataset$Fumatrici)
+
+attach(dataset)
+```
+
+
+```{r}
+kable(summary(dataset), caption="Summary of the variables in the dataset") %>%
+  kable_styling()
+```
+
+We note that the variable Age of the mother has a minimum value equal to 0 meaning that there are some wrong data. So we first display the distribution of the age of the mothers. 
+
+```{r}
+ggplot(data = subset(dataset))+
+  geom_bar(aes(x=Anni.madre),
+           stat="count",
+           col="khaki",
+           fill="khaki")+
+  labs(title="Distribution of the mother age",
+       x="Age",
+       y="absolute frequency")+
+  scale_y_continuous(breaks = seq(0,1200,200))+
+  scale_x_continuous(breaks = seq(0,46,2))+
+  theme_classic()+
+  theme(axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+        axis.title.y = element_text(size = 14, margin = margin(r = 10)))
+```
+We can assume that the minimum meaningfull age of a mother is 12 years. So we filter the dataset to remove the dirty data corresponding to mothers with an age smaller than 12. 
+
+```{r}
+dataset <- dataset %>% 
+  filter(Anni.madre >=12)
+```
+
+
+
+## Next, we start analyzing the anthropometrics data (Weigth, Length and Cranial Circumference) of the newborns in the dataset. 
+### First we report a table with the summary of the statistics of the anthropometrics variables
+
+```{r pressure, echo=FALSE}
+cv_funct <- function(x) {
+  return(sd(x) / mean(x) * 100)
+}
+
+kurtosis_index <- function(x) {
+  return(kurtosis(x)-3)
+}
+
+
+std.err <- function(x){
+  return (sd(x)/sqrt(sum(!is.na(x))))
+}
+
+
+sub_data <- subset(dataset[c("Cranio","Peso","Lunghezza")])#,  Gestazione>=37)
+
+statistics <- data.frame(
+        
+  quartile_1 = round(apply(sub_data, 2, function(x) quantile(x,probs=0.25, names=FALSE)),2),
+                          
+  median = round(apply(sub_data, 2, median),2),
+                            
+  quartile_3 = round(apply(sub_data, 2, function(x) quantile(x,probs=0.75, names=FALSE)),2),
+                          
+  mean = round(apply(sub_data, 2, mean),2),
+                          
+  sd = round(apply(sub_data, 2, sd),2),
+                          
+  cv = round(apply(sub_data, 2, cv_funct),2),
+                          
+  skewness = round(apply(sub_data, 2, skewness),2),
+                          
+  kurtosis = round(apply(sub_data, 2, kurtosis_index),2),
+  
+  std_err = round(apply(sub_data,2,std.err),2)
+)
+
+
+rownames(statistics) <- c("Cranial circumference (mm)", "Weight (gr)", "Length (mm)")
+
+kable(statistics, caption="Indices of weight, length and cranial diameter") %>%
+  kable_styling()
+```
+
+
+### Second we display the distribution of the anthropometric variables again a normal distribution
+
+```{r}
+# the function normalize takes in input a variable in string form and returns its values normalized by its mean and standard deviation
+normalize <- function(x){
+  return ((x-mean(x))/sd(x))
+}
+
+# we generate a standard normal distribution
+gaussian_distribution <- rnorm(1000000,0,1)
+
+
+# we plot the density of the different variables against a standard normal distribution
+ggplot()+
+  geom_density(aes(x=gaussian_distribution, fill="N01"), color=NA,  alpha=.8)+
+  geom_density(aes(x=normalize(Peso), color="Weight"), linewidth=1.5)+
+  geom_density(aes(x=normalize(Cranio), color="Cranial circumference"), linewidth=1.5)+
+  geom_density(aes(x=normalize(Lunghezza), color="Length"), linewidth=1.5)+
+  labs(title="Distribution of the variables",
+       x="Normalized variable ",
+       y="density")+
+  scale_fill_manual(values = c(N01 = "grey"),   
+                    labels = c(N01 = "N(0,1)")) +
+  theme_classic()+
+  theme(plot.title.position = "panel",
+        plot.title=element_text(hjust=0.5))+
+  guides(fill = guide_legend(override.aes = list(color = NA)))+
+  labs(color = "Variabile",
+      fill = "Distribuzione normale")
+```
+
+The plots as also the values of skeweness and Kurtosis show that:   
+
+- All the anthropometric variables are more peaked than a normal distribution, so the probability of outliers is smaller that for the normal distribution with same mean and standard deviation.   
+
+- Values in the left tails of the distributions are more likely than values in the right tail. This could be due to the data relative to premature births.   
+
+
+To check if the asymmetry is due to the premature births we plot the distribution of births by gestational weeks.  
+
+
+```{r}
+ggplot(data=dataset)+
+  geom_bar(aes(x=Gestazione),
+           stat="count",
+           col="pink",
+           fill="pink")+
+  labs(title="Distribution of gestational age at childbirth",
+       x="gestational age (weeks)",
+       y="absolute frequency")+
+  scale_y_continuous(breaks = seq(0,750,50))+
+  scale_x_continuous(breaks = seq(25,43,1))+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 15, hjust = 1),
+        axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+        axis.title.y = element_text(size = 14, margin = margin(r = 10)))
+```
+
+
+A delivery is considered premature if it occurs before 37 weeks of gestation. By looking at the barplot we note there exist different many premature birthds in the dataset. We expect the anthropometric measurements of premature newborns to be significantly smaller.  
+
+So we filter the data relative only to the non-premature births and study their statistics. 
+
+
+```{r}
+regular_deliveries_data <- dataset %>% filter(Gestazione >= 37)
+
+statistics_regular_deliveries <- data.frame(
+        
+  quartile_1 = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, function(x) quantile(x,probs=0.25, names=FALSE)),2),
+                          
+  median = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, median),2),
+                            
+  quartile_3 = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, function(x) quantile(x,probs=0.75, names=FALSE)),2),
+                          
+  mean = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, mean),2),
+                          
+  sd = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, sd),2),
+                          
+  cv = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, cv_funct),2),
+                          
+  skewness = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, skewness),2),
+                          
+  kurtosis = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, kurtosis_index),2),
+  
+  std_err = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")],2,std.err),2)
+)
+
+rownames(statistics_regular_deliveries) <- c("Cranial circumference (mm)", "Weight (gr)", "Length (mm)")
+
+kable(statistics_regular_deliveries, caption="Indices of weight, length and cranial diameter of the non-premature births") %>%
+  kable_styling()
+
+
+
+# we plot the density of the different variables against a standard normal distribution
+ggplot()+
+  geom_density(aes(x=gaussian_distribution, fill="N01"), color=NA,  alpha=.8)+
+  geom_density(aes(x=normalize(regular_deliveries_data$Peso), color="Weight"), linewidth=1.5)+
+  geom_density(aes(x=normalize(regular_deliveries_data$Cranio), color="Cranial circumference"), linewidth=1.5)+
+  geom_density(aes(x=normalize(regular_deliveries_data$Lunghezza), color="Length"), linewidth=1.5)+
+  labs(title="Distribution of the anthropometric variables \n relative to the non-premature deliveries",
+       x="Normalized variable ",
+       y="density")+
+  scale_fill_manual(values = c(N01 = "grey"),   
+                    labels = c(N01 = "N(0,1)")) +
+  theme_classic()+
+  theme(plot.title.position = "panel",
+        plot.title=element_text(hjust=0.5))+
+  guides(fill = guide_legend(override.aes = list(color = NA)))+
+  labs(color = "Variabile",
+      fill = "Distribuzione normale")
+```
+
+The significantly smaller values of skeweness of all the anthropometric variables corresponding only to the non-premature births confirm that the asymmetry that we had previously observed was mainly due to the presence of premature births. Also the values of the kurtosis have significanlty decreased suggesting a much better normal approximation of the distribution of the anthropometric variables when filtering the data corresponding to the only non-premature deliveries. The length is the only variables that is not really normally distributed. The non-normality of the variable Lenght could be due to the presenze of some corrupted data. 
+To this end we study the correlation between the anthropometric variables.
+
+
+```{r}
+
+
+cat("The correlation coefficiente of the variable Length with the varibles Weight and Cranial circumference in non premature newborns is equal to: \n", 
+    "-cor(Length, Weight) = ", cor(regular_deliveries_data$Lunghezza, regular_deliveries_data$Peso)
+ , "\n",
+    "-cor(Length, Cranial circumference) = ", cor(regular_deliveries_data$Lunghezza, regular_deliveries_data$Cranio)
+)
+```
+```{r, fig.width=10, fig.height=5}
+scatt1 = ggplot(regular_deliveries_data, aes(x = Lunghezza, y = Peso)) + 
+                geom_point()+
+                theme_classic()+
+                theme(axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+                      axis.title.y = element_text(size = 14, margin = margin(r = 10)))+
+                labs(title="Scatterplot of Lenght against Weight",
+                                        x=" Lenght(mm)",
+                                        y=" Weight(gr)")+
+                scale_y_continuous(breaks = seq(2000,5000,500))+
+                scale_x_continuous(breaks = seq(300,600,50))
+
+
+scatt2 = ggplot(regular_deliveries_data, aes(x = Lunghezza, y = Cranio)) + 
+                geom_point()+
+                theme_classic()+
+                theme(axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+                      axis.title.y = element_text(size = 14, margin = margin(r = 10)))+
+                labs(title="Scatterplot of Lenght against Cranial circumference",
+                                        x=" Lenght(mm)",
+                                        y=" Cranial circumference(mm)")+
+                scale_x_continuous(breaks = seq(300,600,50))
+
+comb_fig_scatt <- scatt1 + scatt2 + plot_layout(ncol=2, heights = c(5), widths= c(5,5))
+print(comb_fig_scatt)
+```
+From the scatterplots, it can be seen that there is one outlier measurement reporting a length smaller than 350 mm, which could be due to an error in the dataset, such as a typo in the annotation of the newborn's length. 
+So we decide to clean the dataset of regular newborns from this datapoint.
+
+```{r}
+regular_deliveries_data <- regular_deliveries_data %>% filter(Lunghezza >= 350)
+
+statistics_regular_deliveries <- data.frame(
+        
+  quartile_1 = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, function(x) quantile(x,probs=0.25, names=FALSE)),2),
+                          
+  median = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, median),2),
+                            
+  quartile_3 = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, function(x) quantile(x,probs=0.75, names=FALSE)),2),
+                          
+  mean = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, mean),2),
+                          
+  sd = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, sd),2),
+                          
+  cv = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, cv_funct),2),
+                          
+  skewness = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, skewness),2),
+                          
+  kurtosis = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")], 2, kurtosis_index),2),
+  
+  std_err = round(apply(regular_deliveries_data[c("Cranio","Peso","Lunghezza")],2,std.err),2)
+)
+
+rownames(statistics_regular_deliveries) <- c("Cranial circumference (mm)", "Weight (gr)", "Length (mm)")
+
+kable(statistics_regular_deliveries, caption="Indices of weight, length and cranial diameter of the non-premature births") %>%
+  kable_styling()
+```
+
+We observe that now, in the cleaned dataset, also the variable Length follows approximately a normal distribution, with both kurtosis and skewness coefficients close to 0.
+
+
+### Analysis of weight, length and cranial diameter of the sample with respect to the population statistics.
+
+According to the study [International standards for newborn weight,
+length, and head circumference by gestational age and
+sex](https://doi.org/10.1016/S0140-6736(14)60932-6), the birthweight,
+birthlength and birth head circumference of babies born in Italy from
+the 37th week of gestation on, have the following mean and standard
+deviation:
+
+-   birthweight: Mean = 3.3, SD = 0.4,
+
+-   birthlength: Mean = 49.4, SD = 1.7,
+
+-   birth head circumference: Mean = 34.0, SD = 1.2
+
+From the central limit theorem we know that given a random variable
+X with mean $\mu_0$ and standard deviation $\sigma$, the mean over a
+random sample of N people distributes as a random variable following a
+normal distribution with mean $\mu_0$ and standard deviation $\sigma/N$.
+
+So for the three variables weight, length and cranial circumference we
+assume as null hypothesis (H0) that they have mean $\mu_0=$ 3300 gr,
+49.4 cm and 34 cm and standard deviation $\sigma=$ 400gr, 1.7cm, 1.2cm,
+respectively. Then we test this hypotheses using a Z-test. To this end
+we consider the sub-dataset corresponding to the births after the 37th
+week of gestation, having length $N$. 
+
+Then we compute the Z-test value 
+$$Z = \frac{mean(Variable)-\mu_0}{\sigma/\sqrt{N}}.$$
+
+
+We compute the corresponfing p-values, i.e. the probability of getting a value equal or
+smaller than mean(Variable) by randomly sampling N births. If the
+p-value is smaller than the level of significance that we set to 0.05,
+we reject the hypothesis H0.
+
+```{r}
+z_test = function(x, mu0, stdev, alfa){
+
+  x = na.omit(x)
+  mu_cap = mean(x)
+  n = length(x)
+  
+  Z = (mu_cap - mu0) / (stdev / sqrt(n))
+  valori.soglia = qnorm(c(alfa/2, 1-alfa/2))
+  
+  CI <- c(mu_cap+qnorm(alfa/2)*(stdev/sqrt(n)),
+          mu_cap-qnorm(alfa/2)*(stdev/sqrt(n)))
+    
+  return(
+    list(mean.sample= mu_cap,
+         stat.test = Z,
+         threshold.val = valori.soglia,
+         pvalue = 2*pnorm(-abs(Z)),
+         Int.Conf. = CI
+         ))
+}
+```
+
+
+
+```{r}
+z_test_weight = z_test(regular_deliveries_data$Peso, 3300, 400, 0.05)
+
+z_test_length = z_test(regular_deliveries_data$Lunghezza, 494, 17, 0.05)
+
+z_test_cranial_diam = z_test(regular_deliveries_data$Cranio, 340, 12, 0.05)
+
+
+cat("The p-values of length, weight and cranial circumference are all smaller than 0.05, so we reject the hypothesis H0 that the three variables are distributed according to the distribution of weight, length and cranial diameter of the italian population. \n", 
+    "-p_value(Weight) = ", z_test_weight$pvalue , "\n",
+    "-p_value(Length) = ", z_test_length$pvalue , "\n",
+    "-p_value(Cranial diameter) = ", z_test_cranial_diam$pvalue )
+```
+
+In particular we display the Z-test values of the anthropometric variables against the level of significance of 0.05 of the Z-test.
+
+```{r}
+ggplot()+
+  geom_density(aes(x=gaussian_distribution, fill="N01"), color=NA,  alpha=.8) +
+  geom_vline(aes(xintercept=z_test_weight$stat.test, color="Weight"), linewidth=1.5) +
+  geom_vline(aes(xintercept=z_test_length$stat.test, color="Length"), linewidth=1.5)+
+  geom_vline(aes(xintercept=z_test_cranial_diam$stat.test, color="Cranial circumference"), linewidth=1.5)+
+  geom_vline(aes(xintercept=z_test_length$threshold.val, color="Threshold p=0.05"),linewidth=1, linetype="dashed")+
+  scale_color_manual(values= c("Weight"= "gold1", "Length"="gold4", "Cranial circumference"="gold3", "Threshold p=0.05"="red"))+
+  scale_fill_manual(values = c(N01 = "grey"),   
+                    labels = c(N01 = "N(0,1)")) +
+  labs(title="Z values of weight, length and cranial circumference",
+       x=" ",
+       y=" ")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 15, hjust = 1),
+        axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+        axis.title.y = element_text(size = 14, margin = margin(r = 10)),
+        legend.position ="bottom")
+```
+
+
+### Analysis of the differences in the antrhopometric variables across the different between males and females.
+
+First we display the distribution of newborns between the two sexes, which result quite uniform.
+
+
+
+```{r}
+sex_colors <- c("M" = "dodgerblue", "F" = "hotpink")  
+
+
+ggplot(data=dataset)+
+  geom_bar(aes(x=Sesso,
+               fill=Sesso,
+               color=Sesso),
+           stat="count")+
+  labs(title="Sex distribution of newborns",
+       x="sex",
+       y="absolute frequency",
+       color="SEX:",
+       fill="SEX:")+
+  scale_fill_manual(values= sex_colors)+
+  scale_y_continuous(breaks = seq(0,1500,100))+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 15, hjust = 1),
+        axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+        axis.title.y = element_text(size = 14, margin = margin(r = 10)))
+```
+
+Second we study the statistics of the anthropometric variables across the two sexes and display them via a boxplot. In order to test later differences across the sexes using a t.test it is important to compare normally distrubuted quantities. For this reason, we restrict our study only to the not-premature deliveries.
+
+
+```{r}
+cv_funct <- function(x) {
+  return(sd(x) / mean(x) * 100)
+}
+
+
+conditional_dataset_sex <- regular_deliveries_data %>% 
+  group_by(Sesso) %>% 
+  summarise(mean_peso = round(mean(Peso),2),
+            sd_peso = round(sd(Peso),2),
+            cv_peso = round(cv_funct(Peso), 2),
+            skew_peso = round(skewness(Peso), 2),
+            kurt_peso = round(kurtosis_index(Peso), 2),
+            
+            mean_lunghezza = round(mean(Lunghezza),2),
+            sd_lunghezza = round(sd(Lunghezza),2),
+            cv_lunghezza = round(cv_funct(Lunghezza), 2),
+            skew_lunghezza = round(skewness(Lunghezza), 2),
+            kurt_lunghezza = round(kurtosis_index(Lunghezza), 2),
+            
+            mean_cranio = round(mean(Cranio),2),
+            sd_cranio = round(sd(Cranio),2),
+            cv_cranio = round(cv_funct(Cranio), 2),
+            skew_cranio = round(skewness(Cranio), 2),
+            kurt_cranio = round(kurtosis_index(Cranio), 2))
+
+
+colnames(conditional_dataset_sex) <- c("sex", "mean", "sd", "cv", "Skew", "kurt" , "mean", "sd", "cv" , "Skew", "kurt",  "mean", "sd", "cv", "Skew", "kurt")
+
+kable(conditional_dataset_sex, caption="Indices of weight, length and cranial diameter of non-premature newborns, divided by sex") %>%
+  kable_styling(bootstrap_options = "condensed", full_width = TRUE) %>%
+  add_header_above(c(" "=1, "Weight" = 5, "Length" = 5, "Cranial circumference" = 5)) %>%
+  row_spec(1, background = "pink")%>%
+  row_spec(2, background = "lightblue") %>%
+  column_spec(c(1,6,11), border_right = TRUE)
+```
+
+
+
+```{r, fig.width=15, fig.height=6}
+
+box_length_sex <- ggplot(data=regular_deliveries_data,
+                     aes(x=Sesso,
+                        y=Lunghezza,
+                        fill=Sesso),
+                        color=Sesso)+
+                     geom_boxplot()+
+                     labs(title="Length ditribution according to sex\n of non premature newborns",
+                          x=" ",
+                          y="length (cm)")+
+                     scale_fill_manual(values= sex_colors)+
+                     theme_classic()+
+                     theme(plot.title.position = "panel",
+                           plot.title = element_text(size=16, hjust=0.5),
+                           axis.title.x = element_text(size=14),
+                           axis.title.y = element_text(size=14),
+                           axis.text.x = element_text(size=14),
+                           axis.text.y = element_text(size=10),
+                           legend.position = "none")+
+                      scale_y_continuous(breaks = seq(310, 560, by = 25))+
+                      scale_x_discrete(labels=c("M"="Male", "F"="Female"))
+
+
+box_weight_sex <- ggplot(data=regular_deliveries_data,
+                     aes(x=Sesso,
+                        y=Peso,
+                        fill=Sesso),
+                        color=Sesso)+
+                     geom_boxplot()+
+                     labs(title="Weight ditribution according to sex\n of non premature newborns",
+                          x=" ",
+                          y="weight (Kg)")+
+                     scale_fill_manual(values= sex_colors)+
+                     theme_classic()+
+                     theme(plot.title.position = "panel",
+                           plot.title = element_text(size=16, hjust=0.5),
+                           axis.title.x = element_text(size=14),
+                           axis.title.y = element_text(size=14),
+                           axis.text.x = element_text(size=14),
+                           axis.text.y = element_text(size=10),
+                           legend.position = "none")+
+                      scale_y_continuous(breaks = seq(1000, 5000, by = 400),
+                                        labels = seq(1.0, 5.0, by = 0.4))+
+                      scale_x_discrete(labels=c("M"="Male", "F"="Female"))
+
+
+box_head_sex <- ggplot(data=regular_deliveries_data,
+                     aes(x=Sesso,
+                        y=Cranio,
+                        fill=Sesso),
+                        color=Sesso)+
+                     geom_boxplot()+
+                     labs(title="Cranial diameter ditribution according to sex\n of non premature newborns",
+                          x=" ",
+                          y="diameter (cm)")+
+                     scale_fill_manual(values= c("M"="dodgerblue", "F"="hotpink"))+
+                     theme_classic()+
+                     theme(plot.title.position = "panel",
+                           plot.title = element_text(size=16, hjust=0.5),
+                           axis.title.x = element_text(size=14),
+                           axis.title.y = element_text(size=14),
+                           axis.text.x = element_text(size=14),
+                           axis.text.y = element_text(size=10),
+                           legend.position = "none")+
+                      scale_y_continuous(breaks = seq(250, 400, by = 25))+
+                      scale_x_discrete(labels=c("M"="Male", "F"="Female"))
+
+
+comb_fig_antropometrics <- box_head_sex + box_weight_sex + box_length_sex + plot_layout(ncol=3, heights = c(5), widths= c(5,5,5))
+print(comb_fig_antropometrics)
+```
+The data suggest a difference in the anthropometric variables across the two sexes, with higher values for all the variables in case of males rather than females. 
+
+### We test the hypothesis that the antropometric values of males and females are significantly different
+
+In order to perform a meaningfull t-test that compares the distributions of anthropometric measurements of males and females we first have to check that the distributions of the antrhopometric measurements of males and females are approximatelly normal and have similar variances. 
+The previous table suggest that this should be true if we restrict our study only to the non-premature deliveries. 
+We perform Q-Q tests and Shapiro Wilk tests to verify that the three variables distribute according to normal distributions for both sexes. We recall the Q-Q plots display the observed quantiles of the variables against the quantiles of a Gaussian distribution. So, if the variables come from a normal distribution, the points in the Q-Q plot will approximately lie along a straight line.
+
+
+```{r, fig.width=10, fig.height=15}
+
+males <- regular_deliveries_data %>%
+  filter(Sesso=="M")
+
+females <- regular_deliveries_data %>%
+  filter(Sesso=="F" & Lunghezza>400)
+
+
+## QQ-plots of the length
+QQ_length_males = ggplot(males, aes(sample = Lunghezza)) +
+  labs(title="Q-Q Plot of the length\n of male newborns",
+            x="Theoretical Quantiles",
+            y="Observed Quantiles")+
+  stat_qq(color = "dodgerblue") +
+  stat_qq_line(color="red") +
+  theme_classic()
+
+QQ_length_females = ggplot(females, aes(sample = Lunghezza)) +
+  labs(title="Q-Q Plot of the length\n of female newborns",
+            x="Theoretical Quantiles",
+            y="Observed Quantiles")+
+  stat_qq(color = "hotpink") +
+  stat_qq_line(color="black") +
+  theme_classic()
+
+## QQ_plots of the weight
+QQ_weight_males = ggplot(males, aes(sample = Peso)) +
+  labs(title="Q-Q Plot of the weight\n of male newborns",
+            x="Theoretical Quantiles",
+            y="Observed Quantiles")+
+  stat_qq(color = "dodgerblue") +
+  stat_qq_line(color="red") +
+  theme_classic()
+
+QQ_weight_females = ggplot(females, aes(sample = Peso)) +
+  labs(title="Q-Q Plot of the weight\n of female newborns",
+            x="Theoretical Quantiles",
+            y="Observed Quantiles")+
+  stat_qq(color = "hotpink") +
+  stat_qq_line(color="black") +
+  theme_classic()
+
+QQ_cranial_males = ggplot(males, aes(sample = Cranio)) +
+  labs(title="Q-Q Plot of the cranial circumference\n of male newborns",
+            x="Theoretical Quantiles",
+            y="Observed Quantiles")+
+  stat_qq(color = "dodgerblue") +
+  stat_qq_line(color="red") +
+  theme_classic()
+
+QQ_cranial_females = ggplot(females, aes(sample = Cranio)) +
+  labs(title="Q-Q Plot of the cranial circumference\n of female newborns",
+            x="Theoretical Quantiles",
+            y="Observed Quantiles")+
+  stat_qq(color = "hotpink") +
+  stat_qq_line(color="black") +
+  theme_classic()
+
+comb_QQ <- QQ_length_males + QQ_length_females +
+                  QQ_weight_males + QQ_weight_females +
+                  QQ_cranial_males + QQ_cranial_females +
+                  plot_layout(ncol=2, heights = c(5,5,5), widths= c(5,5))
+
+print(comb_QQ)
+
+
+shaptestLM = shapiro.test(males$Lunghezza)
+shaptestLF = shapiro.test(females$Lunghezza)
+shaptestWM = shapiro.test(males$Peso)
+shaptestWF = shapiro.test(females$Peso)
+shaptestCM = shapiro.test(males$Cranio)
+shaptestCF = shapiro.test(females$Cranio)
+
+cat("The maximum Shapiro-Wilk statistics of the 6 normality tests about distribution of weight, length and cranial circumference across the two sexes is:", min(shaptestLM$statistic, shaptestLF$statistic, shaptestWM$statistic, shaptestWF$statistic, shaptestCM$statistic, shaptestCF$statistic), "\n")
+
+cat("The minimum Shapiro-Wilk p.value of the 6 normality tests about distribution of weight, length and cranial circumference across the two sexes is:", min(shaptestLM$p.value, shaptestLF$p.value, shaptestWM$p.value, shaptestWF$p.value, shaptestCM$p.value, shaptestCF$p.value))
+```
+
+From the Q-Q plots and the Shapiro-Wilk tests we can argue that the anthropometric variables, even if not exactly distributed according to normal distributions, are really close to normal distributions. So we can perform a t.test to verify the null hypothesis that the distribution followed by males and females is the same.
+
+```{r}
+ttest_length = t.test(males$Lunghezza, females$Lunghezza,  
+                 alternative = "two.sided", 
+                 mu = 0, 
+                 var.equal = TRUE,
+                 conf.level = 0.95,
+                 paired = FALSE) 
+
+ttest_weight = t.test(males$Peso, females$Peso,  
+                 alternative = "two.sided", 
+                 mu = 0, 
+                 var.equal = TRUE,
+                 conf.level = 0.95,
+                 paired = FALSE) 
+
+ttest_cranium = t.test(males$Cranio, females$Cranio,  
+                 alternative = "two.sided", 
+                 mu = 0, 
+                 var.equal = TRUE,
+                 conf.level = 0.95,
+                 paired = FALSE) 
+
+cat("The p-values of the t-tests about length, weight and cranial circumference distribution comparison between males and females are: \n", 
+    "-p_value(Weight) = ", ttest_weight$p.value , "\n",
+    "-p_value(Length) = ", ttest_length$p.value , "\n",
+    "-p_value(Cranial diameter) = ", ttest_cranium$p.value )
+
+```
+The very small p-values of the three t.tests show that there is a significant statistical difference in the mean of the anthropometric variables between males and females. In particular we can refuse the null hypothesis H0 and assert that the distributions of the anthropometric measurements followed by males and females are different.
+
+
+
+## Analysis of cesarean deliveries
+
+Now we analyze the number of cesarean deliveries across the different hospitals.
+First we study the the absolute and relative frequency of each hospital. 
+
+```{r}
+#create a conditional dataset with the number of deliveries and cesarean deliveries per hospital
+conditional_dataset_ospedale <- 
+  dataset %>% 
+  group_by(Ospedale) %>%  
+  summarise(cesareo = sum(Tipo.parto == "Ces", na.rm = TRUE),
+            naturale = sum(Tipo.parto == "Nat", na.rm = TRUE),
+            parti= sum())
+```
+
+```{r}
+Freq_ass_hosp = table(dataset["Ospedale"])
+Freq_rel_hosp = table(dataset["Ospedale"])/N_observations
+Freq_hosp = cbind(Freq_ass_hosp,Freq_rel_hosp)
+rownames(Freq_hosp) <- c("Hospital1","Hospital2","Hospital3")
+colnames(Freq_hosp) <- c("Absolute frequency","Relative frequency")
+kable(t(Freq_hosp), caption = 'Deliveries distribution across hospitals') %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+We have observed that the distribution of the deliveries across the three hospitals is essentially uniform.
+
+Next we use a boxplot to display the percentage of cesarean deliveries in each hospital.
+
+```{r, fig.width=10, fig.height=5}
+
+hospitals=c("osp1" = "Hospital1", "osp2"="Hospital2", "osp3"="Hospital3")
+
+dataset$Tipo.parto <- factor(dataset$Tipo.parto, levels = c("Nat", "Ces"))
+
+bar_cesarean_hospital =  ggplot(data=dataset)+
+                                geom_bar(aes(x=Ospedale,
+                                             fill=Tipo.parto),
+                                         position="fill")+
+                                labs(title="Percentage of cesarean childbirths by hospitals",
+                                     x="",
+                                     y="Percentage",
+                                     fill="type of delivery:")+
+                                scale_fill_manual(values= c("Ces"="red", "Nat"="ivory2"), labels = c("Ces"= "Cesarean", "Nat"="Natural"))+
+                                theme_classic()+
+                                theme(plot.title.position = "panel",
+                                      plot.title = element_text(size=14, hjust=0.5),
+                                      axis.title.x = element_text(size=12),
+                                      axis.title.y = element_text(size=12),
+                                      axis.text.x = element_text(size=10),
+                                      axis.text.y = element_text(size=10),
+                                      legend.position = "bottom",
+                                      legend.title = element_text(size = 12),
+                                      legend.text = element_text(size = 12))+
+                                 scale_y_continuous(labels = percent_format(),
+                                           breaks = seq(0, 1, by = 0.1))+
+                                 scale_x_discrete(labels=hospitals)
+
+
+print(bar_cesarean_hospital)
+```
+The boxplot show that in all the three hospitals the percentage of cesarean deliveries is approximately of 30%.  In particular, the number of cesarean deliveries seems to be marginally lower in the Hospital3 with respect to Hospital1 and Hospital2.
+
+
+### Next we test the null hypothesis that the distribution of cesarean deliveries is the same and so uniform across the three hospitals
+
+We first use a Pearson’s Chi-squared test to examine the hypothesis that
+the proportion of cesarean deliveries is equal across the hospitals. It
+compares the observed frequencies of cesarean and natural deliveries in
+each hospital with the expected frequencies calculated under the null
+hypothesis of uniform distribution of cesarean deliveries across
+hospitals, literally:
+$$Expected\_Freq\_Ces(Hosp) = Prob(Cesarean)* Number\_Deliveries(Hosp) $$
+where $Prob(Cesarean)=N\_tot(Cesarean)/N\_tot(deliveries)$. The test
+assesses whether the observed differences are statistically significant
+by providing a chi-squared statistic and a p-value to support or reject
+the null hypothesis.
+
+```{r}
+# create contingency table bewtween hospitals and kind of delivery
+table_delivery_hospital = table(Ospedale, Tipo.parto)
+
+#The Pearson’s Chi-squared test is performed 
+chisq_test = chisq.test(table_delivery_hospital)
+cat("The p-value of the Pearson's Chi-squared test is" , chisq_test$p.value)
+```
+
+<!-- # dataset$Tipo.parto.num = ifelse(Tipo.parto=="Nat",1,0) -->
+<!-- #  -->
+<!-- #  -->
+<!-- # pairwise.t.test(dataset$Tipo.parto.num, Ospedale, -->
+<!-- #                 paired = F, -->
+<!-- #                 pool.sd = T, -->
+<!-- #                 p.adjust.method = "none") -->
+
+Based on the p-value of the Pearson's Chi-squared we can not reject the null-hypothesis.
+
+The test Chi-squared that we have performed is based on the assumption
+that for sufficiently many observations the distribution of the
+frequencies of cesarean deliveries at each hospital is close to a normal
+distribution, because of the central limit theorem. However, in this
+case, we know that the number of cesarean deliveries at the $i$-th
+hospital follows a binomial distribution $B(p_i)$. So we can also
+perform a binomial test for each hospital to examine the hypothesis that
+$p_i=Prob(Cesarean)$ for each hospital. $Prob(Cesarean)$ as defined
+above is assumed as an accurate approximation of probability of cesarean delivery if the distribution is uniform across the hospitals, in particular since the distribution of deliveries per hospital is quite uniform there is no need to use a weighted formula for the probability $Prob(Cesarean)$. We report the the $p$-value and the confidence interval of this test for each hospital.
+
+```{r}
+# first we create a table with the total number of deliveries and cesarean deliveries observed at each hospital.
+
+sub_dataset = subset(dataset, Ospedale=="osp1")
+N_ces_hosp = sum(sub_dataset$Tipo.parto=="Ces")
+N_deliveries_hosp = nrow(sub_dataset)
+
+Freq_ces_hosp = table(Ospedale[Tipo.parto=="Ces"])
+Ces_hosp = cbind(Freq_ass_hosp,Freq_ces_hosp)
+Ces_hosp = as.data.frame(Ces_hosp)
+
+rownames(Ces_hosp) <- c("Hospital_1", "Hospital_2", "Hospital_3")
+
+# Next we compute Prob(cesarean) that should be a good approximation of the probability of oberving a cesarean delivery assuming this is uniform across the three hospitals.
+
+prob_cesarean = sum(Tipo.parto=="Ces")/N_observations
+
+# Last we perform a binomial test for each hospital
+p_values <- numeric(nrow(Ces_hosp))
+conf_int <- numeric(nrow(Ces_hosp))
+
+for(i in seq_len(nrow(Ces_hosp))){
+  test <- binom.test(Ces_hosp$Freq_ces_hosp[i], Ces_hosp$Freq_ass_hosp[i], p = prob_cesarean, alternative = "two.sided")
+  p_values[i] <- test$p.value
+  conf_int[i] <- paste0("(", round(test$conf.int[1],2), ",", round(test$conf.int[2],2),")")  
+}
+
+Ces_hosp$p_value <- p_values
+Ces_hosp$conf_int <- conf_int
+
+kable(t(Ces_hosp[, c("p_value", "conf_int")]), caption = 'P-values and confidence intervals for the binomial outcomes of each hospital,1n calculated under the assumption of a binomial distribution with a uniform probability\n of cesarean deliveries across all hospitals.') %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), position="left")
+```
+Also in this case the p-value of the binomial tests do not allow to reject the null hypothesis asserting that the number of deliveries across the three hospitals is uniform.
+
+
+## Next we analyze the frequency of smoking mothers.
+
+
+```{r}
+Freq_rel_smoker = sum(dataset$Fumatrici == 1)/N_observations
+
+cat("The percentage of smoking mothers is:", paste0(Freq_rel_smoker,"%"))
+```
+Moreover we investigate if the smoke influence some of the other variables, including weight, length and Cranial circumference and gestational age.
+
+```{r, fig.width=10, fig.height=10}
+
+boxplot_smoking_1= ggplot(data=dataset,
+                           aes(x=Fumatrici,
+                               y=Peso,
+                               fill=Fumatrici))+
+                           geom_boxplot()+
+                           labs(title="Weight distribution",
+                                x=" ",
+                                y="weight (kg)")+
+                           scale_fill_manual(values= c("0"="green", "1"="grey"), 
+                                             labels = c("0"= "Non-smoker", "1"="Smoker"))+
+                           theme_classic()+
+                           theme(plot.title.position = "panel",
+                                 plot.title = element_text(size=16, hjust=0.5),
+                                 axis.title.x = element_text(size=14),
+                                 axis.title.y = element_text(size=14),
+                                 axis.text.x = element_text(size=14),
+                                 axis.text.y = element_text(size=10),
+                                 legend.position = "none")+
+                                 scale_y_continuous(labels = seq(1,5,0.5),
+                                                     breaks = seq(1000, 5000, by = 500))+
+                                 scale_x_discrete(labels=c("Non-smoker", "Smoker"))
+
+
+boxplot_smoking_2 = ggplot(data=dataset,
+                           aes(x=Fumatrici,
+                               y=Lunghezza,
+                              fill=Fumatrici))+
+                           geom_boxplot()+
+                           labs(title="Length distribution",
+                                x=" ",
+                                y="Length (cm)")+
+                           scale_fill_manual(values= c("0"="green", "1"="grey"), 
+                                             labels = c("0"= "Non-smoker", "1"="Smoker"))+
+                           theme_classic()+
+                           theme(plot.title.position = "panel",
+                                 plot.title = element_text(size=16, hjust=0.5),
+                                 axis.title.x = element_text(size=14),
+                                 axis.title.y = element_text(size=14),
+                                 axis.text.x = element_text(size=14),
+                                 axis.text.y = element_text(size=10),
+                                 legend.position = "none")+
+                                 scale_y_continuous(breaks = seq(300,600,50),
+                                                    labels = seq(30, 60, 5))+
+                                 scale_x_discrete(labels=c("Non-smoker", "Smoker"))
+
+
+boxplot_smoking_3 = ggplot(data=dataset,
+                           aes(x=Fumatrici,
+                               y=Cranio,
+                              fill=Fumatrici))+
+                           geom_boxplot()+
+                           labs(title="Cranial circumference distribution",
+                                x=" ",
+                                y="Cranial circumference (cm)")+
+                           scale_fill_manual(values= c("0"="green", "1"="grey"), 
+                                             labels = c("0"= "Non-smoker", "1"="Smoker"))+
+                           theme_classic()+
+                           theme(plot.title.position = "panel",
+                                 plot.title = element_text(size=16, hjust=0.5),
+                                 axis.title.x = element_text(size=14),
+                                 axis.title.y = element_text(size=14),
+                                 axis.text.x = element_text(size=14),
+                                 axis.text.y = element_text(size=10),
+                                 legend.position = "none")+
+                                 scale_y_continuous(labels = seq(25,40,5),
+                                                     breaks = seq(250, 400, by = 50))+
+                                 scale_x_discrete(labels=c("Non-smoker", "Smoker"))
+
+
+
+boxplot_smoking_4 = ggplot(data=dataset,
+                           aes(x=Fumatrici,
+                               y=Gestazione,
+                              fill=Fumatrici))+
+                           geom_boxplot()+
+                           labs(title="Gestational time distribution",
+                                x=" ",
+                                y="Gestational time")+
+                           scale_fill_manual(values= c("0"="green", "1"="grey"), 
+                                             labels = c("0"= "Non-smoker", "1"="Smoker"))+
+                           theme_classic()+
+                           theme(plot.title.position = "panel",
+                                 plot.title = element_text(size=16, hjust=0.5),
+                                 axis.title.x = element_text(size=14),
+                                 axis.title.y = element_text(size=14),
+                                 axis.text.x = element_text(size=14),
+                                 axis.text.y = element_text(size=10),
+                                 legend.position = "none")+
+                                 scale_y_continuous(breaks = seq(26, 42, by = 2))+
+                                 scale_x_discrete(labels=c("Non-smoker", "Smoker"))
+
+comb_smoke <- boxplot_smoking_1 + boxplot_smoking_2 + boxplot_smoking_3 + boxplot_smoking_4 +    plot_layout(ncol=2, heights = c(5,5), widths= c(5,5))
+
+print(comb_smoke)
+
+```
+The boxplot may suggest a difference in the measurements and gestational time between smoking and non smoking mothers. We test this hypothesis using a t.test.
+
+
+```{r}
+Smokers_data <- dataset %>%
+  filter(Fumatrici=="1")
+
+Not_smokers_data <- dataset %>%
+  filter(Fumatrici=="0")
+
+ttest_smoke_weight = t.test(Smokers_data$Peso, Not_smokers_data$Peso,  
+                 alternative = "two.sided", 
+                 mu = 0, 
+                 var.equal = TRUE,
+                 conf.level = 0.95,
+                 paired = FALSE) 
+
+ttest_smoke_length = t.test(Smokers_data$Lunghezza, Not_smokers_data$Lunghezza,  
+                 alternative = "two.sided", 
+                 mu = 0, 
+                 var.equal = TRUE,
+                 conf.level = 0.95,
+                 paired = FALSE) 
+
+
+ttest_smoke_cranium = t.test(Smokers_data$Cranio, Not_smokers_data$Cranio,  
+                 alternative = "two.sided", 
+                 mu = 0, 
+                 var.equal = TRUE,
+                 conf.level = 0.95,
+                 paired = FALSE) 
+
+ttest_smoke_gestation = t.test(Smokers_data$Gestazione, Not_smokers_data$Gestazione,  
+                 alternative = "two.sided", 
+                 mu = 0, 
+                 var.equal = TRUE,
+                 conf.level = 0.95,
+                 paired = FALSE) 
+
+cat("The p-values of the t-tests about length, weight, cranial circumference and gestation time distribution comparison between smoking and non-smoking mothers are: \n", 
+    "-p_value(Weight) = ", ttest_smoke_weight$p.value , "\n",
+    "-p_value(Length) = ", ttest_smoke_length$p.value , "\n",
+    "-p_value(Cranial diameter) = ", ttest_smoke_cranium$p.value, "\n",
+    "-p_value(Cranial diameter) = ", ttest_smoke_gestation$p.value)
+```
+The t.tests do not allow us to reject the hypothesis that the gestational time and antropometric measurments of newborns are statistically different according to smoking and not-smoking mothers.
+
+
+## Next we analyze the number of deliveries and relation with the age of the mothers.
+
+First we explore the variable number of deliveries.
+
+```{r}
+Freq_abs_N.deliveries = table(dataset["N.gravidanze"]) 
+Freq_rel_N.deliveries = table(dataset["N.gravidanze"])/N_observations
+
+Freq_N.deliveries=data.frame(N.gravidanze = names(Freq_abs_N.deliveries),
+                             Freq_abs = as.numeric(Freq_abs_N.deliveries),
+                             Freq_rel = paste(round(Freq_rel_N.deliveries,2),"%"))
+
+Freq_N.deliveries$N.gravidanze <- factor(Freq_N.deliveries$N.gravidanze, 
+                                        levels=as.character(sort(as.numeric(unique(Freq_N.deliveries$N.gravidanze)))))
+
+
+ggplot(data=Freq_N.deliveries)+
+  geom_bar(aes(x=N.gravidanze, y=Freq_abs),
+           stat="identity",
+           col="aquamarine",
+           fill="aquamarine")+
+  labs(title="Number of previous pregnancies",
+       x="",
+       y="absolute frequency")+
+  scale_y_continuous(breaks = seq(0,1200,200))+
+  geom_text(aes(x=N.gravidanze, y=Freq_abs+50, label = Freq_rel))+
+  theme_classic()+
+  theme(axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+        axis.title.y = element_text(size = 14, margin = margin(r = 10)))
+```
+
+We observe that most of deliveries correspond to first deliveries and that less than 10% of the mothers have 4 children or more.
+
+
+Next we investigate if there is a correlation between the number of children and the age of the mother. To this end we split the dataset in classes according to the Number of deliveries and years of the mother and we display the dstribution according to the cross classes.
+
+```{r}
+dataset$N.gravidanze_CL <- cut(dataset$N.gravidanze, 
+                     breaks=c(0,1,2,3,100), 
+                     right=FALSE, 
+                     labels=c("0", "1","2","3+"))
+
+
+dataset$Anni.madre_CL <- cut(dataset$Anni.madre, 
+                     breaks=c(11,20,26,32,38,46))
+
+dataset$N.gravidanze_CL <- cut(dataset$N.gravidanze, 
+                     breaks=c(0,1,2,3,100), 
+                     right=FALSE, 
+                     labels=c("0","1","2","3+"))
+
+cont_table_year_N.delivery = table(dataset$Anni.madre_CL, dataset$N.gravidanze_CL)
+
+ggpubr::ggballoonplot(data=as.data.frame(cont_table_year_N.delivery),
+                      fill="khaki")
+```
+
+<!-- #  -->
+<!-- #  -->
+<!-- # freq_ass_age <- table(dataset$Anni.madre_CL) -->
+<!-- #  -->
+<!-- # count <- sum((dataset$Anni.madre > 10) & (dataset$Anni.madre <= 46)) -->
+<!-- #  -->
+<!-- # freq_rel_age <- round(freq_ass_age/count,3) -->
+<!-- #  -->
+<!-- # freq_age=as.data.frame(cbind(freq_ass_age, freq_rel_age)) -->
+<!-- #  -->
+<!-- # kable(freq_age, caption="Distribution of the deliveries for classes of age") %>% -->
+<!-- #   kable_styling(bootstrap_options = c("striped", "hover"), position="center") -->
+
+
+<!-- ggplot(data = subset(dataset, !is.na(Anni.madre_CL)))+ -->
+<!--   geom_bar(aes(x=Anni.madre_CL), -->
+<!--            stat="count", -->
+<!--            col="khaki", -->
+<!--            fill="khaki")+ -->
+<!--   labs(title="Distribution of the mother age", -->
+<!--        x="Age", -->
+<!--        y="absolute frequency")+ -->
+<!--   scale_y_continuous(breaks = seq(0,1200,200))+ -->
+<!--   theme_classic()+ -->
+<!--   theme(axis.title.x = element_text(size = 14, margin = margin(t = 10)), -->
+<!--         axis.title.y = element_text(size = 14, margin = margin(r = 10))) -->
+
+
+As expected we observe that an increasing number of children usually correspond to older mothers. We test the hypothesis the the distribution of number of childer is not uniform across the ages via a Pearson chi-squared test.
+
+```{r}
+chisq_test = chisq.test(cont_table_year_N.delivery)
+cat("The p-value of the Pearson's Chi-squared test is" , chisq_test$p.value) 
+```
+
+The Pearson's Chi squared test confirms the hypothesis that the distribution of number of deliveries per age is not uniform. 
+
+## Creation of a regression model for the weight of the newborn.
+We start studying the correlations between the different variables and the variable weight. First we display the correlations between the different quantitative variable and the variable weight.
+
+```{r}
+# panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...)
+# {
+#   #usr <- par("usr"); on.exit(par(usr))
+#   #par(usr = c(0, 1, 0, 1))
+#   r <- (cor(x, y))
+#   txt <- format(c(r, 1), digits = digits)[1]
+#   txt <- paste0(prefix, txt)
+#   if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
+#   text(0.5, 0.5, txt, cex = 1.5)
+# }
+
+panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...)
+{
+  r <- cor(x, y, use = "complete.obs")
+  txt <- format(c(r, 1), digits = digits)[1]
+  txt <- paste0(prefix, txt)
+  
+  usr <- par("usr") # leggi coordinate correnti
+  x_pos <- mean(usr[1:2])  # centro asse x
+  y_pos <- mean(usr[3:4])  # centro asse y
+  
+  if(missing(cex.cor)) cex.cor <- 10/strwidth(txt)
+  text(x_pos, y_pos, txt, cex = 1.5, ...)
+}
+
+
+#correlazioni
+pairs(dataset[, c("Anni.madre","N.gravidanze", "Gestazione", "Peso", "Lunghezza", "Cranio")], lower.panel=panel.cor, upper.panel=panel.smooth)
+```
+
+The correlation matrix suggest a medium to high correlation between Weight and Length/Cranium circumference and gestation time. Differently, the weight seems not to be correlated to the number of deliveries and age of the mother. Additionally we have already observed that there is not a significant correlation between the weight of the newborn and the fact that the mother is a smoker. Differently we have observed a strong correlation between the sex of the newborn and its weight. 
+
+The scatter plots also suggest a possible nonlinear dependance of the weight of the newborns with respect to gestation time and possibly Length and cranium circumference.
+
+Even if this is not observable from the correlation matrix, the literature suggest that there could be a difference in the weight of the newborns between the first child and the subsequent ones (see [International standards for newborn weight, length, and head circumference by gestational age and sex](https://doi.org/10.1016/S0140-6736(14)60932-6)), for this reason we split the dataset according to the Number of delivery classes "0" and "1+" and use this as a qualitative variable in the investigation of a good regression model fo the weight of the newborns.
+
+```{r}
+dataset$N.gravidanze_CL <- cut(dataset$N.gravidanze, 
+                     breaks=c(0,1,100), 
+                     right=FALSE, 
+                     labels=c("0","1+"))
+```
+
+
+<!-- ggplot(data=dataset, -->
+<!--        aes(x=N.gravidanze_CL, -->
+<!--            y=Peso, -->
+<!--            fill=N.gravidanze_CL))+ -->
+<!--        geom_boxplot(color="black")+ -->
+<!--        labs(title="Weight distribution according to Number of deliveries", -->
+<!--             x=" ", -->
+<!--             y="weight (kg)")+ -->
+<!--        scale_fill_manual(values= c("0"="aquamarine", "1+"="aquamarine3"))+ -->
+<!--        theme_classic()+ -->
+<!--        theme(plot.title.position = "panel", -->
+<!--              plot.title = element_text(size=16, hjust=0.5), -->
+<!--              axis.title.x = element_text(size=14), -->
+<!--              axis.title.y = element_text(size=14), -->
+<!--              axis.text.x = element_text(size=14), -->
+<!--              axis.text.y = element_text(size=10), -->
+<!--              legend.position = "none")+ -->
+<!--              scale_y_continuous(labels = seq(1,5,0.5), -->
+<!--                                  breaks = seq(1000, 5000, by = 500))+ -->
+<!--              scale_x_discrete(labels=c("1st", "2nd", "3rd+")) -->
+
+
+
+<!-- ```{r} -->
+<!-- pairwise.t.test(dataset$Peso, dataset$N.gravidanze_CL, p.adjust.method = "bonferroni")  -->
+<!-- ``` -->
+
+
+We investiagte the best linear regression model using a stepwise selection procedure. We start from the full model from which we omit the variables Hospital and Kind of delivery since there is no reason why these variables should influence the weight of the newborn. Then we subtract or add back the variables that seems less influential. Finally we select the best model based on the BIC metrics.  
+
+```{r}
+mod_tot<-lm(Peso ~ Anni.madre + N.gravidanze_CL + Fumatrici + Gestazione + Lunghezza + Cranio + Sesso, data=dataset)
+summary(mod_tot)
+```
+The variables "age", "N.deliveries" and "smoking" seeem to be the less significant. So we start removing the variable "age" from the model.
+
+```{r}
+mod1<-lm(Peso ~  N.gravidanze_CL + Fumatrici + Gestazione + Lunghezza + Cranio + Sesso, data=dataset)
+summary(mod1)
+```
+cat("After removing the variable \"age\" the variables \"N.deliveries\" and \"smoking\" are still not significant.\n" )
+cat("So we remove the variable \"smoking\" from the model.\n" )
+
+
+```{r}
+mod2<-lm(Peso ~ N.gravidanze_CL + Gestazione + Lunghezza + Cranio + Sesso, data=dataset)
+summary(mod2)
+```
+
+
+After removing the variable smoking the variables N.deliveries is still little significant.
+So we remove also this variable from the model.
+
+
+```{r}
+mod3<-lm(Peso ~ Gestazione + Lunghezza + Cranio + Sesso, data=dataset)
+summary(mod3)
+```
+
+
+In the final model all the remaining variables seem very significant so we don't remove any further variable.
+We also note that the adjusted R-squared has remained unchanged after removing the variables "age" and "smoking" while has only slightly reduced when removing the variable "N.deliveries".
+Next we test the different models that we have considered by looking at the analysis of variance between each model and the subsequent one and then we look at the BIC value of the four models.
+
+
+```{r}
+kable(anova(mod_tot, mod1, mod2, mod3), caption="Analysis of Variance of each model with respect to the previous one") %>%
+  kable_styling()
+```
+
+
+The analysis of variance between each model and the subsequent one shows that every time we have removed a variable the residual sum of squares has reduced, however the reduction has been statistically significant only once that we have removed all the three variables.
+
+
+```{r}
+kable(BIC(mod_tot, mod1, mod2, mod3), caption="Bayesian Information Criterion (BIC) of the four models considered") %>%
+  kable_styling()
+```
+
+
+Including only linear terms in the variables we find that the best model, according to the BIC values, is the one that predicts the weight of the newborn based only on the variables Length, Cranial circumference, sex and gestation time, followed closely by the model that included also the dependence upon the number of deliveries.
+
+Next we start from the best model that we found and consider if to include also nonlinear terms in the variables. 
+In particular we note that the the weigth should be proportional to the volume of the body and that the volume likely depends on cubic terms in the variables length and cranial circumferece. Indeed if we think about the body as a cylinder or parallelepipedon we could write its volume in terms of $length\times(cranial\_circumference)^2$ or $length^2\times cranial\_circumference$. 
+
+Additionally the scatterplots suggest a possible nonlinear dependence of the weight on the gestational age. As a first step we study the correlation of some nonlinear terms between each other and with the variable weight. 
+
+```{r}
+dataset$Gestazione2 <- (dataset$Gestazione)^2
+dataset$logGestazione <- log(dataset$Gestazione)
+
+pairs(dataset[, c("Peso", "Gestazione", "Gestazione2",
+                "logGestazione")], lower.panel=panel.cor, upper.panel=panel.smooth)
+
+dataset$Lunghezza2 <- (dataset$Lunghezza)^2
+dataset$Lunghezza2xCranio <- (dataset$Lunghezza)^2*(dataset$Cranio)
+dataset$Cranio2 <- (dataset$Cranio)^2
+dataset$LunghezzaxCranio2 <- dataset$Lunghezza*(dataset$Cranio)^2
+
+pairs(dataset[, c("Peso","Lunghezza", "Lunghezza2", "Lunghezza2xCranio", 
+                "Cranio", "Cranio2", "LunghezzaxCranio2")], lower.panel=panel.cor, upper.panel=panel.smooth)
+```
+
+Due to the realtively small range intervals of the variables we note that the correlation between all the variables Gestation time, Length and Cranial circumference with their quadratic version, as also between gestation time and its logarithm, is 1 up to a second error approximation. So it doesn't make sense to include these terms in the model since we can not expect them to perform significantly better than the linear terms.
+
+The situation is slightly different for the cubic terms mixed in length and cranial circumference. Indeed, even if they have high correlations with the variables length and cranial circumference they also have higher correlations with the variable weight with respect to the linear terms. So we try to include these terms in the model.
+
+
+```{r}
+tot_non_lin_mod <- lm(Peso ~ N.gravidanze_CL + Gestazione + Lunghezza + Cranio + Lunghezza2xCranio + LunghezzaxCranio2 + Sesso, data=dataset)
+
+nonlin_mod = MASS::stepAIC(tot_non_lin_mod, direction="both", k=log(N_observations))
+
+summary(nonlin_mod)
+
+kable(BIC(mod3, nonlin_mod), caption="Bayesian Information Criterion (BIC) of the linear model vs the nonlinear one") %>%
+  kable_styling()
+
+```
+The model selected by the stepwise method by taking into account for all the possible nonlinear terms that we have previously considered as a Bayesian Information Criterion (BIC) value significantly smaller than the best model that is linear in all the variables. 
+
+Next we compute the variance inflation factors of the selected model. 
+
+```{r}
+
+kable(car::vif(nonlin_mod), caption="Variance Inflation factors of the nonlinear model") %>%
+  kable_styling()
+
+```
+As expected the model has extremely high variance inflaction factor due to the high correlation coefficients between the variables. Since the high variance inflation factors make the coefficient estimates unstable and unreliable, we prefer to discard the last model.
+
+However we have learnt that the inclusion of nonlinear terms can improve the model. So, next, we try to update the last model by removing variables that are highly correlated to see if we can get a model that is more accurate than the linear model mod3 without having high variance inflation factors. In particular we highlight that a model expressing the weight linearly with respect to a volume would be physically much more meaningfull than one espressing the weight linearly with respect to lengths. For these reasons we opt for removing from the model the two linear variables "length" and "cranial_circumference"
+
+```{r}
+nonlin_mod2 <- update(nonlin_mod, . ~ . - Lunghezza - Cranio)
+
+summary(nonlin_mod2)
+
+kable(car::vif(nonlin_mod2), caption="Variance Inflation factors of the nonlinear model") %>%
+  kable_styling()
+```
+
+After removing the variables length and cranial circumference the variance inflation factor is still high for the two cubic variables. For this reason we remove from the model also the variable $Lunghezza\times Cranio^2$ which results the less influential. 
+
+```{r}
+nonlin_mod3 <- update(nonlin_mod2, . ~ . - LunghezzaxCranio2)
+
+summary(nonlin_mod3)
+
+kable(car::vif(nonlin_mod3), caption="Variance Inflation factors of the nonlinear model") %>%
+  kable_styling()
+
+kable(BIC(mod2, nonlin_mod, nonlin_mod2, nonlin_mod3), caption="Bayesian information factor of the linear mode vs nonlinear ones") %>%
+  kable_styling()
+
+
+```
+
+The final model predicts the weight of the new born based on gestation time, squared length times cranium circumference, sex and number of deliveries. The model has a BIC value larger than the best model which included all the possible nonlinear terms but smaller than the best model that included only linear terms in the variables. Moreover, differently from the best model that included all the possible nonlinear terms, the model "nonlin_mod3" has all the variance inflation factors smaller than 5.
+
+We point out that the model "nonlin_mod3", including the mixed term $length^2\times cranial_circumferece$ but not the linear terms in the variables $length$ ad $cranial_circumferece$, may break the principle of marginality. However we highlight that the model is also physically more meaningfull that one including the linear terms in the variables $length$ and $cranial_circumference$.
+For these reasons we accept this model and analyze it.
+We start analyzing its coefficients 
+
+```{r}
+kable(coef(nonlin_mod3), caption="Coefficients of final nonlinear model") %>%
+  kable_styling()
+```
+The coefficients say that for each unit increment in the gestation time (1 week) we observe an increment of approximately 40gr in the weigth of the newborn. Similarly for each 1mm^3 increment in the volume term ($Length^2 \times Cranial_circfumference$) we register an increment of $3.5*10^-5$ (gr) in the weight of the newborn. Finally we observe that the males will register approximately 7gr more than females and child after the first one weight approximately 4gr more than a first child.
+
+Next we analyze the residuals, outliers and leverages of the model.
+
+
+```{r}
+par(mfrow=c(2,2))
+plot(nonlin_mod3)
+
+lmtest::bptest(nonlin_mod3)
+lmtest::dwtest(nonlin_mod3)
+shapiro.test(nonlin_mod3$residuals)
+```
+
+The analysis shows that there is no autocorrelation of the residuals (p-value of the Durbin-Watson test > 0.05). However we observe that the residuals are not normally distributed (p-value of the Shapiro-Wilk test <0.05) and that there is no heteroscedasticity (p-value of the Breusch-Pagan < 0.05). Additionally we observe that there are some highly influential outlier datapoints having Cook distance close to 0.5.
+
+So we investigate deeper the leverages and outliers. We consider leverages the points having leverage value larger than the threshold. This is set equal to 3 times the leverage mean, i.e. the number of parameters of the model over the number of observations in the dataset. Moreover the outliers are identified by a Bonferroni test on the studentized residuals of the model.
+
+```{r}
+
+#leverage
+lev<-hatvalues(nonlin_mod3)
+plot(lev)
+p<-sum(lev)
+n<-length(lev)
+soglia=3*p/n
+abline(h=soglia,col=2)
+title(main = "Leverage values of model mod1")
+leverages=which(lev>soglia)
+cat("There are", length(leverages), "leverages\n")
+
+#outliers
+plot(rstudent(nonlin_mod3))
+abline(h=c(-2,2))
+title(main = "Studentized Residuals of model mod1")
+
+
+cat("The outliers are:\n")
+car::outlierTest(nonlin_mod3)
+
+
+#distanza di cook
+cook<-cooks.distance(nonlin_mod3)
+plot(cook,ylim = c(0,1)) 
+title(main = "Cook distance of residuals of model mod1")
+```
+
+We note that the most influential outlier, the datapoint 1549, with a Cook distance around 0.2, could have a relevant effect on the estimate of the coefficients of the model but not drastical. By investigating this datapoint we find that this is the same datapoint that we have already met before which has a length much lower than expected, probably for a typo in its transposition.
+
+
+```{r}
+kable(t(dataset[1549,]), caption="Outlier datapoint") %>%
+  kable_styling()
+
+```
+
+
+Next we evaluate the quality of the model in terms of the $R^2$ and RMSE metrics.
+```{r}
+# R^2 :
+summary_mod <- summary(nonlin_mod3)
+R2 <- summary_mod$r.squared
+cat("The R^2 value of the model is equal to", R2, ", so the model is explaining about 73% of the variance of the variable Weight. \n")
+
+# RMSE:
+predictions <- predict(nonlin_mod3, newdata = dataset)
+residuals <- dataset$Peso - predictions
+RMSE <- sqrt(mean(residuals^2))
+perRMSE=RMSE/mean(dataset$Peso)
+cat("The RMSE value of the model is equal to", RMSE, ".\n") 
+cat("This means that the model has a mean error of prediction of" , paste0(round(perRMSE,2),"%"),"with respect to the mean of the variable weight.\n")
+cat("Moreover this means that the variance of the prediction errors of the model is about", round(RMSE/sd(dataset$Peso),2), "of the variance of the variable weight")
+```
+## Using the model to make predictions
+Assume to have a female baby that will be delivered at the 39th week and whose mother has already delivered two children. Then we can predict her weight. 
+For the new baby we assume a length and cranial circumference equal to the mean weight and cranial circumferene of female newborns at the 39th gestation week.
+
+
+```{r}
+length= mean(subset(dataset, Sesso == "F" & Gestazione==39)$Lunghezza)
+cranium= mean(subset(dataset, Sesso == "F" & Gestazione==39)$Cranio)
+
+new_data <- data.frame("N.gravidanze" = c(2),
+                       "Gestazione"=c(39),
+                       "Lunghezza"=c(length),
+                       "Cranio"=c(cranium),
+                       "Sesso"=c("F")
+                       )
+
+new_data$Lunghezza2xCranio = (new_data$Lunghezza)^2*(new_data$Cranio)
+new_data$Cranio2 <- (new_data$Cranio)^2
+new_data$N.gravidanze_CL <- cut(new_data$N.gravidanze, 
+                     breaks=c(0,1,100), 
+                     right=FALSE, 
+                     labels=c("0","1+"))
+
+
+weight_prediction <- round(predict(nonlin_mod3, newdata = new_data))
+
+
+cat("The regression model predicts a weight equal to", paste0(weight_prediction,"gr"), ".\n") 
+```
+
+
+## Finally we display the relations captured in the model.
+
+<!-- ```{r} -->
+
+<!-- ggplot(data=dataset_clean, -->
+<!--        aes(x = Lunghezza,  -->
+<!--            y = Cranio,  -->
+<!--            color = Peso)) + -->
+<!--        geom_point(size = 3.5) + -->
+<!--        labs(title = "Weight as a function of Length and Cranial circumference", -->
+<!--             x = "Length", -->
+<!--             y = "Cranial circumference",  -->
+<!--             color = "Weight")+ -->
+<!--       theme_classic()+ -->
+<!--       theme(axis.title.x = element_text(size = 14, margin = margin(t = 10)), -->
+<!--             axis.title.y = element_text(size = 14, margin = margin(r = 10))) -->
+
+<!-- ``` -->
+ 
+
+First we display how the weight is distributed according to the sex and number of deliveries with respect to the quantitative variables in the model, i.e. $gestation\_time$ and $(length)^2\times cranial\_circumference$.
+
+
+```{r, fig.width=11.5, fig.height=5}
+
+plot_fin_1 = ggplot(data=dataset)+
+                    geom_point(aes(x=Gestazione,
+                                 y=Peso,
+                                 col=Sesso),position = "jitter")+
+                    geom_smooth(aes(x=Gestazione,
+                                    y=Peso,
+                                    col=Sesso), se=F, method = "lm")+
+                   scale_color_manual(values= sex_colors, 
+                                   labels = c("M"= "Male", "F"="Female"))+
+                   labs(title = "Weight as a function of Gestation time",
+                        x = "gestation time",
+                        y = "weight (gr)")+
+                    theme_classic()+
+                    theme(axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+                          axis.title.y = element_text(size = 14, margin = margin(r = 10)),
+                          legend.title = element_text(size = 14),
+                          legend.text = element_text(size = 14))
+
+
+legend <- as_ggplot(get_legend(plot_fin_1))
+
+plot_fin_1 = ggplot(data=dataset)+
+                    geom_point(aes(x=Gestazione,
+                                 y=Peso,
+                                 col=Sesso),position = "jitter")+
+                    geom_smooth(aes(x=Gestazione,
+                                    y=Peso,
+                                    col=Sesso), se=F, method = "lm")+
+                   scale_color_manual(values= sex_colors, 
+                                   labels = c("M"= "Male", "F"="Female"))+
+                   labs(title = "Weight as a function of Gestation time",
+                        x = "gestation time",
+                        y = "weight (gr)")+
+                    theme_classic()+
+                    theme(axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+                          axis.title.y = element_text(size = 14, margin = margin(r = 10)),
+                          legend.position = "none")
+
+
+ plot_fin_3 = ggplot(data=dataset)+
+                    geom_point(aes(x=Lunghezza2xCranio,
+                                 y=Peso,
+                                 col=Sesso))+
+                    geom_smooth(aes(x=Lunghezza2xCranio,
+                                    y=Peso,
+                                    col=Sesso), se=F, method = "lm")+
+                   scale_color_manual(values= sex_colors, 
+                                   labels = c("M"= "Male", "F"="Female"))+
+                    labs(title = "Weight as a function of \n Lengt^2 x cranial circumference",
+                        x = "Lengt^2 x cranial circumference (mm^3)",
+                        y = "weight (gr)")+
+                    theme_classic()+
+                    theme(axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+                          axis.title.y = element_text(size = 14, margin = margin(r = 10)),
+                          legend.position = "none")
+
+  
+  
+comb_fin <- plot_fin_1 + plot_fin_3 + legend + plot_layout(ncol=3, heights = c(5), widths= c(5,5,1.5))
+
+print(comb_fin)
+```
+
+
+
+```{r, fig.width=11.5, fig.height=5}
+
+plot_fin_1 = ggplot(data=dataset)+
+                    geom_point(aes(x=Gestazione,
+                                 y=Peso,
+                                 col=N.gravidanze_CL),position = "jitter")+
+                    geom_smooth(aes(x=Gestazione,
+                                    y=Peso,
+                                    col=N.gravidanze_CL), se=F, method = "lm")+
+                   labs(title = "Weight as a function of Gestation time",
+                        x = "gestation time",
+                        y = "weight (gr)",
+                        color = "N° previous deliveries")+
+                    theme_classic()+
+                    theme(axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+                          axis.title.y = element_text(size = 14, margin = margin(r = 10)),
+                          legend.title = element_text(size = 14),
+                          legend.text = element_text(size = 14))
+
+
+legend <- as_ggplot(get_legend(plot_fin_1))
+
+plot_fin_1 = ggplot(data=dataset)+
+                    geom_point(aes(x=Gestazione,
+                                 y=Peso,
+                                 col=N.gravidanze_CL),position = "jitter")+
+                    geom_smooth(aes(x=Gestazione,
+                                    y=Peso,
+                                    col=N.gravidanze_CL), se=F, method = "lm")+
+                   labs(title = "Weight as a function of Gestation time",
+                        x = "gestation time",
+                        y = "weight (gr)")+
+                    theme_classic()+
+                    theme(axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+                          axis.title.y = element_text(size = 14, margin = margin(r = 10)),
+                          legend.position = "none")
+
+  
+ plot_fin_3 = ggplot(data=dataset)+
+                    geom_point(aes(x=Lunghezza2xCranio,
+                                 y=Peso,
+                                 col=N.gravidanze_CL))+
+                    geom_smooth(aes(x=Lunghezza2xCranio,
+                                    y=Peso,
+                                    col=N.gravidanze_CL), se=F, method = "lm")+
+                    labs(title = "Weight as a function of \n Lengt^2 x cranial circumference",
+                        x = "Lengt^2 x cranial circumference (mm^3)",
+                        y = "weight (gr)")+
+                    theme_classic()+
+                    theme(axis.title.x = element_text(size = 14, margin = margin(t = 10)),
+                          axis.title.y = element_text(size = 14, margin = margin(r = 10)),
+                          legend.position = "none")
+
+  
+  
+comb_fin <- plot_fin_1 + plot_fin_3 + legend + plot_layout(ncol=3, heights = c(5), widths= c(5,5,1.5))
+
+print(comb_fin)
+```
+
+The plots confirm that the weight increases while increasing all the other variables in the model. Moreover we observe that the weight observed in males is always higher than the weight observed in females. Differently the difference in weight between first children and not first children is only observable when varying the variable gestation time. In this case we observe that the weight of first children is slightly smaller than the weight of not first children. The observations are in agreements with the discussion about the $\beta$ coefficients of the model. 
+
